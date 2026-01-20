@@ -1,0 +1,47 @@
+# Qt build folders
+build/
+build-*/
+*/build/
+*/build-*/
+
+# Qt Creator user files
+*.pro.user
+*.pro.user.*
+*.autosave
+
+# Qt generated files
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.qm
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# QtCreator caches
+.qtc_clangd/
+.qtcreator/
+
+# Compiled Object files
+*.o
+*.obj
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Debug/Release folders
+debug/
+release/
+Debug/
+Release/
+
+# Temporary files
+*~
+*.swp
+*.swo
+*.tmp
