@@ -4,6 +4,9 @@
 #include <QMainWindow>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QPixmap>
+#include <QTimer>
+
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -26,7 +29,10 @@ private:
     Ui::MainWindow *ui;                 /* the user interface object */
     QTcpServer *server;                 /*TCP IP server */
     QTcpSocket *clientSocket = nullptr;           /* connecting to the the client through the soclet */
-    //QByteArray buffer;                  /* assemble the data before making the image the in tcp ip we are not sure that the data will be send in one time before showing it */
+    QByteArray recvBuffer;                   /* assemble the data before making the image the in tcp ip we are not sure that the data will be send in one time before showing it */
+    QPixmap currentPixmap;
+    QTimer *displayTimer;
+
 };
 
 #endif // MAINWINDOW_H

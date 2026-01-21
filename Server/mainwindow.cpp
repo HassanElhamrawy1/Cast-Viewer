@@ -27,6 +27,18 @@ MainWindow::MainWindow(QWidget *parent)
     {
         qDebug() << "Server listening on port 45454";
     }
+    displayTimer = new QTimer(this);
+    connect(displayTimer, &QTimer::timeout, this, [this]() {
+        if (!currentPixmap.isNull()) {
+            ui->labelScreen->setPixmap(
+                currentPixmap.scaled(ui->labelScreen->size(),
+                                     Qt::KeepAspectRatio,
+                                     Qt::SmoothTransformation)
+                );
+        }
+    });
+    displayTimer->start(33);
+
 }
 
 
@@ -47,31 +59,75 @@ void MainWindow::onNewConnection()
 
 void MainWindow::onReadyRead()
 {
-    static QByteArray buffer;                               /* the data can be received partially so we need a buffer to assemble the parts in it*/
-    buffer.append(clientSocket->readAll());                 /* append the upcoming data on the client socket in it*/
+    /* Append any new bytes to the receive buffer */
+    recvBuffer.append(clientSocket->readAll());
 
-    while (buffer.size() >= 4)                              /* the first 4 bytes represent the photo length so we need to read it first */
+    /* Try to parse as many full packets as possible */
+    int offset = 0;
+    const int total = recvBuffer.size();
+    const uchar *dataPtr = (const uchar*)recvBuffer.constData();
+
+    while (true)
     {
-        QDataStream stream(buffer);
-        stream.setByteOrder(QDataStream::BigEndian);        /* to read the length prefix in a correct way here it is BigEndian*/
-        qint32 imgSize;                                     /* variable to dave the image size */
-        stream >> imgSize;                                  /* storing the image size in the variable */
+        /* Need at least 4 bytes for packetType */
+        if (total - offset < 4)
+            break;
 
-        if (buffer.size() < imgSize + 4) break;             /* if the image is not reveived completely  break the loop and wait for the new data */
+        qint32 packetType = qFromBigEndian(*(const qint32*)(dataPtr + offset));
+        offset += 4;
 
-        QByteArray imgData = buffer.mid(4, imgSize);        /* extract the image data after the first 4 bytes */
-        buffer.remove(0, 4 + imgSize);                      /* remove the data from the buffer after processing it */
+        /*************************** CASE 1: IMAGE PACKET ***************************/
+        if (packetType == 1)
+        {
+            /* Image packet: need 4 bytes length + that many bytes */
+            if (total - offset < 4)
+            {
+                offset -= 4; /* unread packetType */
+                break;
+            }
 
-        QPixmap pix;
-        pix.loadFromData(imgData, "JPG");                   /* transform the data into a form can be presented by Qt */
+            qint32 imgSize = qFromBigEndian(*(const qint32*)(dataPtr + offset));
+            offset += 4;
 
-        /* show the image in the Qlabel */
-        ui->labelScreen->setPixmap(pix.scaled(
-            ui->labelScreen->size(),
-            Qt::KeepAspectRatio,                /* to keep the wide and hite of the image */
-            Qt::SmoothTransformation            /* make the image smooth when we change the size */
-            ));
+            /* Wait until full image arrives */
+            if (total - offset < imgSize)
+            {
+                offset -= 8; /* unread type + size */
+                break;
+            }
+
+            QByteArray imgData = recvBuffer.mid(offset, imgSize);
+            offset += imgSize;
+
+            /* Process the image (store in currentPixmap) */
+            QPixmap pix;
+            if (pix.loadFromData(imgData, "JPG"))
+            {
+                currentPixmap = pix;
+                qDebug() << "[SERVER] Frame received:" << imgSize << "bytes";
+            }
+            else
+            {
+                qDebug() << "[SERVER] Failed to load image data";
+            }
+        }
+        /*************************** CASE 2: CONTROL PACKET ***************************/
+        else if (packetType == 2)
+        {
+            /* Mouse control packet - skip for now */
+            qDebug() << "[SERVER] Received control packet (ignored)";
+            break;
+        }
+        else
+        {
+            qDebug() << "[SERVER] Unknown packetType:" << packetType;
+            break;
+        }
     }
+
+    /* Remove processed bytes from recvBuffer */
+    if (offset > 0)
+        recvBuffer.remove(0, offset);
 }
 
 

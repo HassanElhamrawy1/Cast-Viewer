@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
+#include "ScreenCapture.h"
 #include <QScreen>                      /* to get a screenshot (APIs to capture the screen image) */
 #include <QGuiApplication>              /* to get a screenshot (APIs to capture the screen image) */
 #include <QBuffer>                      /* to store the image into buffer before sending it  */
@@ -12,6 +13,9 @@
 #include <QWindow>
 #include <QWidget>
 #include <QMouseEvent>
+
+
+
 
 
 MainWindow::MainWindow(QWidget *parent)
@@ -67,15 +71,41 @@ MainWindow::~MainWindow()
 
 void MainWindow::sendScreen()
 {
-    QScreen *screen = QGuiApplication::primaryScreen();         /* capter the mainscreen */
-    if (!screen || socket->state() != QAbstractSocket::ConnectedState) return;   /* return if the socket is not connected to the server  or if there is no screen */
+    /* Check if socket is connected */
+    if (!socket || socket->state() != QAbstractSocket::ConnectedState)
+        return;
 
-    QPixmap pix = screen->grabWindow(0);                       /* 0 means we capturing the whole screen */
-    /* scaling down the image before compressing */
-    pix = pix.scaled(pix.width()/2, pix.height()/2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    /* Use ScreenCapture wrapper (handles macOS + fallback) */
+    QPixmap pix = ScreenCapture::captureScreen();
 
-    emit frameReady(pix);                             /* send the frame worker to the thread */
+    if (pix.isNull()) {
+        qDebug() << "[CLIENT] Failed to capture screen";
+        return;
+    }
 
+    /* Scale down the image before compressing */
+    pix = pix.scaled(pix.width()/2, pix.height()/2,
+                     Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
+    /* Convert to JPEG */
+    QByteArray jpegData;
+    QBuffer buffer(&jpegData);
+    buffer.open(QIODevice::WriteOnly);
+    pix.save(&buffer, "JPG", 85);
+    buffer.close();
+
+    /* Send packet: [packetType=1][imgSize][imgData] */
+    QByteArray packet;
+    QDataStream out(&packet, QIODevice::WriteOnly);
+    out.setByteOrder(QDataStream::BigEndian);
+
+    out << static_cast<qint32>(1);  // packetType = 1 (image)
+    out << static_cast<qint32>(jpegData.size());
+    packet.append(jpegData);
+
+    /* Send to server */
+    socket->write(packet);
+    socket->flush();
 }
 
 
@@ -227,52 +257,3 @@ void MainWindow::processControlPacket( QByteArray &data)
     }
 }
 
-/* this function will be called everytime we event happened */
-bool MainWindow::eventFilter(QObject *obj, QEvent *event)
-{
-    /* Handle only mouse-related events */
-    if (event->type() == QEvent::MouseMove ||
-        event->type() == QEvent::MouseButtonPress ||
-        event->type() == QEvent::MouseButtonRelease)
-    {
-        /* Convert the generic event into a QMouseEvent */
-        QMouseEvent *mouse = static_cast<QMouseEvent*>(event);
-
-        /* Ensure socket is valid and connected */
-        if (!socket || socket->state() != QAbstractSocket::ConnectedState)
-            return false;
-
-        /* Prepare a control packet to send mouse input to the client */
-        QByteArray ctrlPacket;
-        QDataStream out(&ctrlPacket, QIODevice::WriteOnly);
-        out.setByteOrder(QDataStream::BigEndian);
-
-        /* Packet type = 2 (mouse control packet) */
-        out << static_cast<qint32>(2);
-
-        /* Send mouse coordinates */
-        out << static_cast<qint32>(mouse->position().x());
-        out << static_cast<qint32>(mouse->position().y());
-
-        /* Send mouse button */
-        out << static_cast<qint32>(mouse->button());
-
-        /* Send event type (press / release / move) */
-        out << static_cast<qint32>(event->type());
-
-        /* Send the packet to the client */
-        if (socket && socket->state() == QAbstractSocket::ConnectedState)
-        {
-            socket->write(ctrlPacket);
-        }
-
-
-
-
-        /* Returning true blocks local mouse interaction on the server window */
-        return true;
-    }
-
-    /* Default handling for other events */
-    return QMainWindow::eventFilter(obj, event);
-}
