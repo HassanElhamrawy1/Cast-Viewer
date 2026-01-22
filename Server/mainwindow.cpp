@@ -91,56 +91,24 @@ void MainWindow::onReadyRead()
 /* This function captures mouse events on the label and triggers the packet sending */
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
-    if (obj == ui->labelScreen && !ui->labelScreen->pixmap().isNull())
+    if (obj == ui->labelScreen && (event->type() == QEvent::MouseMove ||
+                                   event->type() == QEvent::MouseButtonPress ||
+                                   event->type() == QEvent::MouseButtonRelease))
     {
-        if (event->type() == QEvent::MouseMove ||
-            event->type() == QEvent::MouseButtonPress ||
-            event->type() == QEvent::MouseButtonRelease)
-        {
-            QMouseEvent *mouse = static_cast<QMouseEvent*>(event);
+        QMouseEvent *mouse = static_cast<QMouseEvent*>(event);
 
-            // 1. حجم الـ Label
-            int labelW = ui->labelScreen->width();
-            int labelH = ui->labelScreen->height();
+        // 1. نحسب النسبة المئوية لمكان الماوس جوه الـ Label (من 0 إلى 1)
+        double normX = (double)mouse->position().x() / ui->labelScreen->width();
+        double normY = (double)mouse->position().y() / ui->labelScreen->height();
 
-            // 2. حجم الصورة الحقيقي
-            QPixmap pix = ui->labelScreen->pixmap();
-            int pixW = pix.width();
-            int pixH = pix.height();
+        // 2. نضرب في 10000 عشان نبعتها كـ Integer دقيق
+        int sendX = normX * 10000;
+        int sendY = normY * 10000;
 
-            // 3. حساب الـ Scaled Size (بنفس طريقة Qt::KeepAspectRatio)
-            QSize scaledSize = pix.size();
-            scaledSize.scale(labelW, labelH, Qt::KeepAspectRatio);
+        /* Send the data */
+        sendControlPacket(sendX, sendY, mouse->button(), event->type());
 
-            // 4. حساب الـ Offset (المسافة الفاضية)
-            int offsetX = (labelW - scaledSize.width()) / 2;
-            int offsetY = (labelH - scaledSize.height()) / 2;
-
-            // 5. الإحداثيات الحقيقية جوه الصورة (بعد طرح الـ Padding)
-            int clickX = mouse->position().x() - offsetX;
-            int clickY = mouse->position().y() - offsetY;
-
-            // 6. لو الضغطة بره الصورة، متبعتش حاجة
-            if (clickX < 0 || clickY < 0 || clickX > scaledSize.width() || clickY > scaledSize.height())
-                return true;
-
-            // 7. النسبة الصحيحة (بناءً على الصورة المعروضة فعلياً)
-            double ratioX = (double)clickX / scaledSize.width();
-            double ratioY = (double)clickY / scaledSize.height();
-
-            // 8. الإحداثيات النهائية على شاشة الكلاينت
-            int remoteX = ratioX * pixW;
-            int remoteY = ratioY * pixH;
-
-            // 9. إرسال البيانات
-            sendControlPacket(remoteX, remoteY, mouse->button(), event->type());
-
-            qDebug() << "[SERVER] Click at Label(" << mouse->position().x() << "," << mouse->position().y()
-                     << ") -> Image(" << clickX << "," << clickY
-                     << ") -> Remote(" << remoteX << "," << remoteY << ")";
-
-            return true;
-        }
+        return true;
     }
     return QMainWindow::eventFilter(obj, event);
 }

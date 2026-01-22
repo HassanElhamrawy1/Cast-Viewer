@@ -156,40 +156,46 @@ void MainWindow::onReadyRead()
             qDebug() << "[CLIENT] Received Control: x=" << x << "y=" << y << "button=" << button << "eventType=" << eventType;
 
             /* NATIVE MACOS MOUSE INJECTION */
+/* NATIVE MACOS MOUSE INJECTION (NORMALIZED) */
 #ifdef Q_OS_MAC
-            CGPoint point = CGPointMake(x, y);
-            CGEventRef event = nullptr;
+            // 1. نرجع النسبة المئوية لأصلها
+            double normX = x / 10000.0;
+            double normY = y / 10000.0;
 
-            /* Map Qt Event Types to macOS Native Events */
-            if (eventType == 5) /* QEvent::MouseMove */
-            {
-                event = CGEventCreateMouseEvent(nullptr, kCGEventMouseMoved, point, kCGMouseButtonLeft);
-                qDebug() << "[CLIENT] Injecting MouseMove at" << x << y;
-            }
-            else if (eventType == 2) /* QEvent::MouseButtonPress */
-            {
-                event = CGEventCreateMouseEvent(nullptr, kCGEventLeftMouseDown, point, kCGMouseButtonLeft);
-                qDebug() << "[CLIENT] Injecting MousePress at" << x << y;
-            }
-            else if (eventType == 3) /* QEvent::MouseButtonRelease */
-            {
-                event = CGEventCreateMouseEvent(nullptr, kCGEventLeftMouseUp, point, kCGMouseButtonLeft);
-                qDebug() << "[CLIENT] Injecting MouseRelease at" << x << y;
-            }
+            // 2. نجيب حجم الشاشة الـ Logical (Points) بتاعة الماك حالياً
+            QScreen *screen = QGuiApplication::primaryScreen();
+            if (screen) {
+                QRect screenRect = screen->geometry();
 
-            if (event)
-            {
-                /* Post the event to the system HID tap */
-                CGEventPost(kCGHIDEventTap, event);
-                CFRelease(event);
-                qDebug() << "[CLIENT] Event posted successfully";
-            }
-            else
-            {
-                qDebug() << "[CLIENT] Failed to create CGEvent for type:" << eventType;
+                // 3. نحسب المكان النهائي بناءً على حجم الشاشة الحقيقي
+                double finalX = screenRect.width() * normX;
+                double finalY = screenRect.height() * normY;
+
+                CGPoint point = CGPointMake(finalX, finalY);
+                CGEventRef eventRef = nullptr;
+
+                // تحديد نوع الـ Event
+                if (eventType == 5) { // MouseMove
+                    eventRef = CGEventCreateMouseEvent(nullptr, kCGEventMouseMoved, point, kCGMouseButtonLeft);
+                    qDebug() << "[CLIENT] Injecting MouseMove at" << finalX << finalY;
+                } else if (eventType == 2) { // MouseButtonPress
+                    eventRef = CGEventCreateMouseEvent(nullptr, kCGEventLeftMouseDown, point, kCGMouseButtonLeft);
+                    qDebug() << "[CLIENT] Injecting MousePress at" << finalX << finalY;
+                } else if (eventType == 3) { // MouseButtonRelease
+                    eventRef = CGEventCreateMouseEvent(nullptr, kCGEventLeftMouseUp, point, kCGMouseButtonLeft);
+                    qDebug() << "[CLIENT] Injecting MouseRelease at" << finalX << finalY;
+                }
+
+                if (eventRef) {
+                    CGEventPost(kCGHIDEventTap, eventRef);
+                    CFRelease(eventRef);
+                    qDebug() << "[CLIENT] Event posted successfully";
+                } else {
+                    qDebug() << "[CLIENT] Failed to create CGEvent for type:" << eventType;
+                }
             }
 #else
-            qDebug() << "[CLIENT]  Not on macOS, skipping injection";
+            qDebug() << "[CLIENT] Not on macOS, skipping injection";
 #endif
         }
         else
