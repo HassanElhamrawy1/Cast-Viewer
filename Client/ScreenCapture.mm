@@ -32,3 +32,37 @@ void ScreenCapture::requestPermission()
 {
     qDebug() << "[ScreenCapture] Permission request (Qt native - no permission needed)";
 }
+
+
+#ifdef Q_OS_MAC
+#include <ApplicationServices/ApplicationServices.h>
+
+void injectMouseClick(int x, int y, bool isPress)
+{
+    // 1. تحديد النقطة (الإحداثيات)
+    CGPoint point;
+    point.x = x;
+    point.y = y;
+
+    // 2. تحديد نوع الحدث (ضغط أم رفع الإصبع)
+    CGEventType type = isPress
+        ? kCGEventLeftMouseDown
+        : kCGEventLeftMouseUp;
+
+    // 3. إنشاء حدث الماوس
+    CGEventRef event = CGEventCreateMouseEvent(
+        NULL,
+        type,
+        point,
+        kCGMouseButtonLeft
+    );
+
+    // 4. إرسال الحدث للنظام ليتم تنفيذه فعلياً
+    CGEventPost(kCGHIDEventTap, event);
+
+    // 5. تنظيف الذاكرة (مهم جداً في C APIs)
+    if (event) {
+        CFRelease(event);
+    }
+}
+#endif

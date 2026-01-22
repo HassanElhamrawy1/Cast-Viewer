@@ -7,6 +7,7 @@
 #include "FramesSender.h"
 #include <QThread>
 #include <QtEndian>
+#include "ScreenCapture.h"
 
 class FramesSender;
 class QThread;
@@ -26,7 +27,6 @@ public:
 private slots:
     void sendScreen();
     void onReadyRead();             /* Parse control packets mouse/keyboard */
-    void processControlPacket(QByteArray &data);       /* slot for socket readyRead */
 
 signals:
     void frameReady(const QPixmap& pixmap);
@@ -38,6 +38,8 @@ private:
     QThread* senderThread;
     FramesSender* frameSender;
     QByteArray recvBuffer;                      /* Buffer for incoming Bytes */
+    int remoteScreenWidth = 1440;
+    int remoteScreenHeight = 900;
 
 };
 

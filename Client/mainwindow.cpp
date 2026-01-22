@@ -1,22 +1,18 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "ScreenCapture.h"
-#include <QScreen>                      /* to get a screenshot (APIs to capture the screen image) */
-#include <QGuiApplication>              /* to get a screenshot (APIs to capture the screen image) */
-#include <QBuffer>                      /* to store the image into buffer before sending it  */
-#include <QDebug>                       /* to write debig messages on the screen */
+#include <QScreen>
+#include <QGuiApplication>
+#include <QBuffer>
+#include <QDebug>
 #include "FramesSender.h"
 #include <QThread>
-#include <QDataStream>                  /* to read the packets */
-#include <QCursor>
-#include <QApplication>
-#include <QWindow>
-#include <QWidget>
-#include <QMouseEvent>
+#include <QDataStream>
 
-
-
-
+#ifdef Q_OS_MAC
+#include <ApplicationServices/ApplicationServices.h>
+#endif
+#include <QtEndian>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -26,12 +22,8 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
 
-    qApp->installEventFilter(this);                  /* if we use this here we are telling the Qt any Event occurs in the MainWindow send it to me first
-                                                        but we need to monitor everything in the app so we need o use qApp */
-
-    /* default: connect to localhost; edit UI later to change IP */
+    /* Connect to server (localhost for testing) */
     socket->connectToHost("127.0.0.1", 45454);
-
 
     /* Create a separate thread for sending frames */
     senderThread = new QThread(this);
@@ -47,21 +39,20 @@ MainWindow::MainWindow(QWidget *parent)
     /* Connect signal to worker */
     connect(this, &MainWindow::frameReady, frameSender, &FramesSender::encodeFrame);
 
-    //connect(frameSender, &FramesSender::frameEncoded, this, [this](const QByteArray& packet){ socket->write(packet);});
-
     connect(frameSender, &FramesSender::frameEncoded, this, [this](const QByteArray &packet){
         if (socket && socket->state() == QAbstractSocket::ConnectedState)
         {
             socket->write(packet);
-            qDebug() << "[CLIENT] Sent frame:" << packet.size() << "bytes";
+            // qDebug() << "[CLIENT] Sent frame:" << packet.size() << "bytes";  /* uncomment for debugging */
         }
     });
 
-    /* when we receive readyRead signal on the network the onReadyRead will be called */
+    /* When we receive data from server, call onReadyRead */
     connect(socket, &QTcpSocket::readyRead, this, &MainWindow::onReadyRead);
 
-    connect(timer, &QTimer::timeout, this, &MainWindow::sendScreen);  /* call sendScreen on every timeout of the timer */
-    timer->start(100); /* 10 frames every 1 second */
+    /* Start screen capture timer (10 FPS) */
+    connect(timer, &QTimer::timeout, this, &MainWindow::sendScreen);
+    timer->start(100);
 }
 
 MainWindow::~MainWindow()
@@ -108,7 +99,6 @@ void MainWindow::sendScreen()
     socket->flush();
 }
 
-
 void MainWindow::onReadyRead()
 {
     /* Append any new bytes to the receive buffer */
@@ -132,21 +122,10 @@ void MainWindow::onReadyRead()
         if (packetType == 1)
         {
             /* Image packet: need 4 bytes length + that many bytes */
-            if (total - offset < 4)
-            {
-                offset -= 4; /* unread packetType */
-                break;
-            }
-
+            if (total - offset < 4) { offset -= 4; break; }
             qint32 imgSize = qFromBigEndian<qint32>(*(const qint32*)(dataPtr + offset));
             offset += 4;
-
-            /* Wait until full image arrives */
-            if (total - offset < imgSize)
-            {
-                offset -= 8; /* unread type + size */
-                break;
-            }
+            if (total - offset < imgSize) { offset -= 8; break; }
 
             QByteArray imgData = recvBuffer.mid(offset, imgSize);
             offset += imgSize;
@@ -155,105 +134,71 @@ void MainWindow::onReadyRead()
             QPixmap pix;
             if (pix.loadFromData(imgData, "JPG"))
             {
-                ui->labelInfo->setPixmap(
-                    pix.scaled(ui->labelInfo->size(),
-                               Qt::KeepAspectRatio,
-                               Qt::SmoothTransformation)
-                    );
+                ui->labelInfo->setPixmap(pix.scaled(ui->labelInfo->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            }
+        }
+        /***************************** CASE 2: CONTROL PACKET *****************************/
+        else if (packetType == 2)
+        {
+            /* Control packet: need 16 bytes (x, y, button, eventType) */
+            if (total - offset < 16) { offset -= 4; break; }
+
+            qint32 x = qFromBigEndian<qint32>(*(const qint32*)(dataPtr + offset));
+            offset += 4;
+            qint32 y = qFromBigEndian<qint32>(*(const qint32*)(dataPtr + offset));
+            offset += 4;
+            qint32 button = qFromBigEndian<qint32>(*(const qint32*)(dataPtr + offset));
+            offset += 4;
+            qint32 eventType = qFromBigEndian<qint32>(*(const qint32*)(dataPtr + offset));
+            offset += 4;
+
+            /* DEBUG: Print what we received */
+            qDebug() << "[CLIENT] Received Control: x=" << x << "y=" << y << "button=" << button << "eventType=" << eventType;
+
+            /* NATIVE MACOS MOUSE INJECTION */
+#ifdef Q_OS_MAC
+            CGPoint point = CGPointMake(x, y);
+            CGEventRef event = nullptr;
+
+            /* Map Qt Event Types to macOS Native Events */
+            if (eventType == 5) /* QEvent::MouseMove */
+            {
+                event = CGEventCreateMouseEvent(nullptr, kCGEventMouseMoved, point, kCGMouseButtonLeft);
+                qDebug() << "[CLIENT] Injecting MouseMove at" << x << y;
+            }
+            else if (eventType == 2) /* QEvent::MouseButtonPress */
+            {
+                event = CGEventCreateMouseEvent(nullptr, kCGEventLeftMouseDown, point, kCGMouseButtonLeft);
+                qDebug() << "[CLIENT] Injecting MousePress at" << x << y;
+            }
+            else if (eventType == 3) /* QEvent::MouseButtonRelease */
+            {
+                event = CGEventCreateMouseEvent(nullptr, kCGEventLeftMouseUp, point, kCGMouseButtonLeft);
+                qDebug() << "[CLIENT] Injecting MouseRelease at" << x << y;
+            }
+
+            if (event)
+            {
+                /* Post the event to the system HID tap */
+                CGEventPost(kCGHIDEventTap, event);
+                CFRelease(event);
+                qDebug() << "[CLIENT] Event posted successfully";
             }
             else
             {
-                qDebug() << "[CLIENT] Failed to load image data";
+                qDebug() << "[CLIENT] Failed to create CGEvent for type:" << eventType;
             }
+#else
+            qDebug() << "[CLIENT]  Not on macOS, skipping injection";
+#endif
         }
-        /***************************** NO MORE CONTROL PACKETS HERE *****************************/
         else
         {
             qDebug() << "[CLIENT] Unknown packetType:" << packetType;
-            /* If unknown, stop to avoid infinite loop */
             break;
         }
     }
 
-    /* Remove processed bytes from recvBuffer */
     if (offset > 0)
         recvBuffer.remove(0, offset);
 }
-
-
-
-
-
-void MainWindow::processControlPacket( QByteArray &data)
-{
-    QDataStream in(&data, QIODevice::ReadOnly);
-    in.setByteOrder(QDataStream::BigEndian);
-
-    /* If the buffer might contain multiple packets, you should loop; for simplicity we assume single packet.*/
-    /* Read packet type */
-    qint32 packetType = 0;
-    if (in.status() != QDataStream::Ok) return;
-    in >> packetType;
-
-    if (packetType == 2) // Mouse event
-    {
-        int x = 0, y = 0, button = 0, action = 0;
-        in >> x >> y >> button >> action;
-
-        /* DEBUG: print what we received */
-        qDebug() << "[CLIENT] Mouse Event Received: pos=" << x << y << " button=" << button << " action=" << action;
-
-        /* Map server coordinates to client screen coordinates if resolutions differ.
-           Here we assume server sends screen coordinates relative to server screen size.
-           If you know serverScreenSize (wServer,hServer), scale to local:
-             int localX = x * (localWidth / (double)wServer);
-             int localY = y * (localHeight / (double)hServer);
-           For now, assume same resolution: */
-        int localX = x;
-        int localY = y;
-
-        /* Move cursor */
-        QCursor::setPos(localX, localY);
-
-        /* Simulate mouse press/release depending on action:
-                action==0 -> move only; action==1 -> press; action==2 -> release; action==3 -> click */
-        if (action == 1 || action == 2 || action == 3)
-        {
-            /* find the widget under cursor */
-            QPoint globalPos(localX, localY);
-            QWidget *w = QApplication::widgetAt(globalPos);
-            if (!w) w = this; /* fallback */
-
-            /* Translate global position to widget-local coordinates */
-            QPoint posInWidget = w->mapFromGlobal(globalPos);
-
-            Qt::MouseButton mb = Qt::LeftButton;
-            if (button == 2) mb = Qt::RightButton;
-            else if (button == 3) mb = Qt::MiddleButton;
-
-            if (action == 1) // press
-            {
-                QMouseEvent pressEv(QEvent::MouseButtonPress, posInWidget, globalPos, mb, mb, Qt::NoModifier);
-                QApplication::sendEvent(w, &pressEv);
-            }
-            else if (action == 2) // release
-            {
-                QMouseEvent releaseEv(QEvent::MouseButtonRelease, posInWidget, globalPos, mb, mb, Qt::NoModifier);
-                QApplication::sendEvent(w, &releaseEv);
-            }
-            else if (action == 3) // click = press+release
-            {
-                QMouseEvent pressEv(QEvent::MouseButtonPress, posInWidget, globalPos, mb, mb, Qt::NoModifier);
-                QApplication::sendEvent(w, &pressEv);
-                QMouseEvent releaseEv(QEvent::MouseButtonRelease, posInWidget, globalPos, mb, mb, Qt::NoModifier);
-                QApplication::sendEvent(w, &releaseEv);
-            }
-        }
-    }
-    else
-    {
-        qDebug() << "[CLIENT] Unknown packetType:" << packetType;
-        /* If packetType==1 (frame) or other, you should forward data to your frame parser. */
-    }
-}
-

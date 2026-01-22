@@ -18,6 +18,7 @@ macx {
     LIBS += -framework AppKit
     LIBS += -framework CoreGraphics
     LIBS += -framework CoreMedia
+    LIBS += -framework ApplicationServices
 
     QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.13
 
@@ -27,3 +28,4 @@ macx {
 
 DISTFILES += \
     Info.plist
+

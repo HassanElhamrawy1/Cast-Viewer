@@ -33,6 +33,12 @@ private:
     QPixmap currentPixmap;
     QTimer *displayTimer;
 
+
+    int remoteScreenWidth = 1440;
+    int remoteScreenHeight = 900;
+    /* Send control packet to client */
+    void sendControlPacket(int x, int y, int button, int eventType);
+
 };
 
 #endif // MAINWINDOW_H

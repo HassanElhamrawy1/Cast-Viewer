@@ -2,31 +2,32 @@
 #include "ui_mainwindow.h"
 #include <QPixmap>                    /* to show the image on the Qlabel */
 #include <QDebug>                     /* to write debugging message on the screen */
-#include <Qpainter>                   /* if we need to draw picture of fill spaces */
 #include <QMouseEvent>
+#include <QtEndian>                   /* for qFromBigEndian */
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)                                        /* create new UI object */
-    , server(new QTcpServer(this))                                  /* create new tcp server object and bind it to the parent */
+    , server(new QTcpServer(this))                                  /* create new tcp server object */
     , clientSocket(nullptr)                                         /* initially there is no clients */
 {
     ui->setupUi(this);                                              /* bind all the UI with the actual window */
 
-    qApp->installEventFilter(this);                  /* if we use this here we are telling the Qt any Event occurs in the MainWindow send it to me first
-                                                        but we need to monitor everything in the app so we need o use qApp */
-
+    /* ✅ Install event filter ONLY on the label that displays client screen */
+    ui->labelScreen->installEventFilter(this);
+    ui->labelScreen->setMouseTracking(true);                        /* enable mouse move events without clicking */
 
     connect(server, &QTcpServer::newConnection,
-            this, &MainWindow::onNewConnection);                    /* call onNewConnection when a client request new connection */
+            this, &MainWindow::onNewConnection);                    /* call onNewConnection when a client requests connection */
 
-    if (!server->listen(QHostAddress::Any, 45454))       /* make sure that you listen to the port 45454 */
+    if (!server->listen(QHostAddress::Any, 45454))                  /* listen to the port 45454 */
     {
         qDebug() << "Server failed to start!";
     } else
     {
         qDebug() << "Server listening on port 45454";
     }
+
     displayTimer = new QTimer(this);
     connect(displayTimer, &QTimer::timeout, this, [this]() {
         if (!currentPixmap.isNull()) {
@@ -38,143 +39,131 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
     displayTimer->start(33);
-
 }
 
-
-
-MainWindow::~MainWindow()             /* responsible for cleaning the memory after closing the application */
+MainWindow::~MainWindow()
 {
     delete ui;
-}                                     /* note we do not need to delete the server or the clienr socket because we select them with this and Qt manage the memory automatically */
+}
 
 void MainWindow::onNewConnection()
 {
-    clientSocket = server->nextPendingConnection();            /* returning QTcpSocket of the new client "QTcpSocket" represent the client connection */
-    connect(clientSocket, &QTcpSocket::readyRead,
-            this, &MainWindow::onReadyRead);                   /* call "onReadyRead" directly after receiving data from the client */
-
-    qDebug() << "Client connected!";                           /* write debug message to tell the user that the client is connected */
+    clientSocket = server->nextPendingConnection();
+    connect(clientSocket, &QTcpSocket::readyRead, this, &MainWindow::onReadyRead);
+    qDebug() << "Client connected!";
 }
 
 void MainWindow::onReadyRead()
 {
-    /* Append any new bytes to the receive buffer */
     recvBuffer.append(clientSocket->readAll());
-
-    /* Try to parse as many full packets as possible */
     int offset = 0;
     const int total = recvBuffer.size();
     const uchar *dataPtr = (const uchar*)recvBuffer.constData();
 
     while (true)
     {
-        /* Need at least 4 bytes for packetType */
-        if (total - offset < 4)
-            break;
-
-        qint32 packetType = qFromBigEndian(*(const qint32*)(dataPtr + offset));
+        if (total - offset < 4) break;
+        qint32 packetType = qFromBigEndian<qint32>(*(const qint32*)(dataPtr + offset));
         offset += 4;
 
-        /*************************** CASE 1: IMAGE PACKET ***************************/
-        if (packetType == 1)
+        if (packetType == 1) /* IMAGE PACKET */
         {
-            /* Image packet: need 4 bytes length + that many bytes */
-            if (total - offset < 4)
-            {
-                offset -= 4; /* unread packetType */
-                break;
-            }
-
-            qint32 imgSize = qFromBigEndian(*(const qint32*)(dataPtr + offset));
+            if (total - offset < 4) { offset -= 4; break; }
+            qint32 imgSize = qFromBigEndian<qint32>(*(const qint32*)(dataPtr + offset));
             offset += 4;
-
-            /* Wait until full image arrives */
-            if (total - offset < imgSize)
-            {
-                offset -= 8; /* unread type + size */
-                break;
-            }
+            if (total - offset < imgSize) { offset -= 8; break; }
 
             QByteArray imgData = recvBuffer.mid(offset, imgSize);
             offset += imgSize;
 
-            /* Process the image (store in currentPixmap) */
             QPixmap pix;
-            if (pix.loadFromData(imgData, "JPG"))
-            {
+            if (pix.loadFromData(imgData, "JPG")) {
                 currentPixmap = pix;
-                qDebug() << "[SERVER] Frame received:" << imgSize << "bytes";
-            }
-            else
-            {
-                qDebug() << "[SERVER] Failed to load image data";
             }
         }
-        /*************************** CASE 2: CONTROL PACKET ***************************/
-        else if (packetType == 2)
-        {
-            /* Mouse control packet - skip for now */
-            qDebug() << "[SERVER] Received control packet (ignored)";
-            break;
-        }
-        else
-        {
-            qDebug() << "[SERVER] Unknown packetType:" << packetType;
+        else {
             break;
         }
     }
-
-    /* Remove processed bytes from recvBuffer */
-    if (offset > 0)
-        recvBuffer.remove(0, offset);
+    if (offset > 0) recvBuffer.remove(0, offset);
 }
 
-
-
-/* this function will be called everytime we event happened */
+/* This function captures mouse events on the label and triggers the packet sending */
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
-    /* Handle only mouse-related events */
-    if (event->type() == QEvent::MouseMove ||
-        event->type() == QEvent::MouseButtonPress ||
-        event->type() == QEvent::MouseButtonRelease)
+    if (obj == ui->labelScreen && !ui->labelScreen->pixmap().isNull())
     {
-        /* Convert the generic event into a QMouseEvent */
-        QMouseEvent *mouse = static_cast<QMouseEvent*>(event);
-
-        /* Ensure socket is valid and connected */
-        if (!clientSocket || clientSocket->state() != QAbstractSocket::ConnectedState)
-            return false;
-
-        /* Prepare a control packet to send mouse input to the client */
-        QByteArray ctrlPacket;
-        QDataStream out(&ctrlPacket, QIODevice::WriteOnly);
-        out.setByteOrder(QDataStream::BigEndian);
-
-        /* Packet type = 2 (mouse control packet) */
-        out << static_cast<qint32>(2);
-
-        /* Send mouse coordinates */
-        out << static_cast<qint32>(mouse->position().x());
-        out << static_cast<qint32>(mouse->position().y());
-
-        /* Send mouse button */
-        out << static_cast<qint32>(mouse->button());
-
-        /* Send event type (press / release / move) */
-        out << static_cast<qint32>(event->type());
-
-        /* Send the packet to the client */
-        if (clientSocket && clientSocket->state() == QAbstractSocket::ConnectedState)
+        if (event->type() == QEvent::MouseMove ||
+            event->type() == QEvent::MouseButtonPress ||
+            event->type() == QEvent::MouseButtonRelease)
         {
-            clientSocket->write(ctrlPacket);
+            QMouseEvent *mouse = static_cast<QMouseEvent*>(event);
+
+            // 1. حجم الـ Label
+            int labelW = ui->labelScreen->width();
+            int labelH = ui->labelScreen->height();
+
+            // 2. حجم الصورة الحقيقي
+            QPixmap pix = ui->labelScreen->pixmap();
+            int pixW = pix.width();
+            int pixH = pix.height();
+
+            // 3. حساب الـ Scaled Size (بنفس طريقة Qt::KeepAspectRatio)
+            QSize scaledSize = pix.size();
+            scaledSize.scale(labelW, labelH, Qt::KeepAspectRatio);
+
+            // 4. حساب الـ Offset (المسافة الفاضية)
+            int offsetX = (labelW - scaledSize.width()) / 2;
+            int offsetY = (labelH - scaledSize.height()) / 2;
+
+            // 5. الإحداثيات الحقيقية جوه الصورة (بعد طرح الـ Padding)
+            int clickX = mouse->position().x() - offsetX;
+            int clickY = mouse->position().y() - offsetY;
+
+            // 6. لو الضغطة بره الصورة، متبعتش حاجة
+            if (clickX < 0 || clickY < 0 || clickX > scaledSize.width() || clickY > scaledSize.height())
+                return true;
+
+            // 7. النسبة الصحيحة (بناءً على الصورة المعروضة فعلياً)
+            double ratioX = (double)clickX / scaledSize.width();
+            double ratioY = (double)clickY / scaledSize.height();
+
+            // 8. الإحداثيات النهائية على شاشة الكلاينت
+            int remoteX = ratioX * pixW;
+            int remoteY = ratioY * pixH;
+
+            // 9. إرسال البيانات
+            sendControlPacket(remoteX, remoteY, mouse->button(), event->type());
+
+            qDebug() << "[SERVER] Click at Label(" << mouse->position().x() << "," << mouse->position().y()
+                     << ") -> Image(" << clickX << "," << clickY
+                     << ") -> Remote(" << remoteX << "," << remoteY << ")";
+
+            return true;
         }
-
-        /* Returning true blocks local mouse interaction on the server window */
-        return true;
     }
-
-    /* Default handling for other events */
     return QMainWindow::eventFilter(obj, event);
+}
+
+/* Private helper function to build and send the control packet */
+void MainWindow::sendControlPacket(int x, int y, int button, int eventType)
+{
+    if (!clientSocket || clientSocket->state() != QAbstractSocket::ConnectedState)
+        return;
+
+    QByteArray ctrlPacket;
+    QDataStream out(&ctrlPacket, QIODevice::WriteOnly);
+    out.setByteOrder(QDataStream::BigEndian);
+
+    /* Packet type 2 = Control */
+    out << (qint32)2;
+    out << (qint32)x;
+    out << (qint32)y;
+    out << (qint32)button;
+    out << (qint32)eventType;
+
+    clientSocket->write(ctrlPacket);
+    clientSocket->flush();
+
+    qDebug() << "[SERVER] Sent Control -> x:" << x << "y:" << y << "type:" << eventType;
 }

@@ -13,4 +13,10 @@ public:
     static void requestPermission();
 };
 
+
+#ifdef Q_OS_MAC
+void injectMouseClick(int x, int y, bool isPress);
+#endif
+
+
 #endif // SCREENCAPTURE_H

@@ -21,6 +21,10 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <key>CFBundleIdentifier</key>
+    <string>com.hassan.CastViewerClient</string>
+    <key>CFBundleName</key>
+    <string>CastViewerClient</string>
     <true/>
 </dict>
 </plist>
